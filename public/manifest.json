@@ -1,0 +1,21 @@
+{
+  "name": "NetFlap Co-op",
+  "short_name": "NetFlap",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#70c5ce",
+  "theme_color": "#70c5ce",
+  "description": "Multiplayer Flappy Bird survival game",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

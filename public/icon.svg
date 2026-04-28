@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#70c5ce"/>
+  <!-- Bird Body -->
+  <path d="M 24 20 h 16 v 4 h 4 v 4 h 4 v 8 h -4 v 4 h -8 v 4 h -16 v -4 h -4 v -4 h -4 v -8 h 4 v -4 h 8 z" fill="#f07000"/>
+  <!-- Bird Eye -->
+  <rect x="36" y="24" width="4" height="4" fill="white"/>
+  <rect x="40" y="24" width="4" height="4" fill="black"/>
+  <!-- Bird Wing -->
+  <rect x="20" y="32" width="12" height="4" fill="#cfc778"/>
+  <!-- Bird Beak -->
+  <path d="M 44 32 h 8 v 4 h 4 v 4 h -12 z" fill="#e05030"/>
+  <!-- Outline -->
+  <path d="M 24 16 h 16 v 4 h -16 z" fill="#53381a"/>
+  <path d="M 40 20 h 4 v 4 h -4 z" fill="#53381a"/>
+  <path d="M 44 24 h 4 v 8 h -4 z" fill="#53381a"/>
+  <path d="M 48 32 h 8 v -4 h -8 z" fill="#53381a"/>
+  <path d="M 56 32 h 4 v 4 h -4 z" fill="#53381a"/>
+  <path d="M 52 36 h -8 v 4 h 8 z" fill="#53381a"/>
+  <path d="M 44 40 h -16 v 4 h 16 z" fill="#53381a"/>
+  <path d="M 28 40 h -8 v -4 h 8 z" fill="#53381a"/>
+  <path d="M 20 36 h -4 v -4 h 4 z" fill="#53381a"/>
+  <path d="M 16 32 h -4 v -8 h 4 z" fill="#53381a"/>
+  <path d="M 20 24 h 4 v -4 h -4 z" fill="#53381a"/>
+</svg>

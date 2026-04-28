@@ -1,0 +1,6 @@
+{
+  "name": "Flappy Duo Online",
+  "description": "A 2-player split-screen online multiplayer Flappy Bird clone using PeerJS and procedural canvas rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
