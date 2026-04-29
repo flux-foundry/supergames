@@ -28,6 +28,7 @@ export interface Pipe {
   x: number;
   openingY: number;
   baseY: number;
+  gap: number;
   isMoving: boolean;
   phase: number;
   passed: boolean;
@@ -111,7 +112,7 @@ export const checkCollision = (bird: BirdState, pipe: Pipe): boolean => {
   
   // Basic AABB check
   if (bxRight > pxLeft && bxLeft < pxRight) {
-    if (byTop < pipe.openingY || byBottom > pipe.openingY + PIPE_GAP) {
+    if (byTop < pipe.openingY || byBottom > pipe.openingY + pipe.gap) {
       return true;
     }
   }

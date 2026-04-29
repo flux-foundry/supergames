@@ -17,6 +17,7 @@ let isBgmPlaying = false;
 
 export const audioSettings = {
   bgmVolume: parseFloat(localStorage.getItem('bgmVolume') || '0.5'),
+  bgmEnabled: localStorage.getItem('bgmEnabled') === 'false' ? false : true,
   sfxVolume: parseFloat(localStorage.getItem('sfxVolume') || '1.0'),
   sfxEnabled: localStorage.getItem('sfxEnabled') === 'false' ? false : true,
 };
@@ -24,11 +25,15 @@ export const audioSettings = {
 export const updateAudioSettings = (newSettings: Partial<typeof audioSettings>) => {
   Object.assign(audioSettings, newSettings);
   localStorage.setItem('bgmVolume', audioSettings.bgmVolume.toString());
+  localStorage.setItem('bgmEnabled', audioSettings.bgmEnabled.toString());
   localStorage.setItem('sfxVolume', audioSettings.sfxVolume.toString());
   localStorage.setItem('sfxEnabled', audioSettings.sfxEnabled.toString());
 
   if (bgmGain) {
-    bgmGain.gain.setValueAtTime(0.04 * audioSettings.bgmVolume, getAudioContext().currentTime);
+    bgmGain.gain.setValueAtTime(
+      audioSettings.bgmEnabled ? 0.04 * audioSettings.bgmVolume : 0, 
+      getAudioContext().currentTime
+    );
   }
 };
 
@@ -65,9 +70,11 @@ export const playBgm = () => {
     bgmOsc.frequency.setValueAtTime(freq, ctx.currentTime);
     
     // Add rhythmic volume ducking (envelope) for chippy staccato feel
-    const baseVol = 0.03 * audioSettings.bgmVolume;
+    const baseVol = audioSettings.bgmEnabled ? 0.03 * audioSettings.bgmVolume : 0;
     bgmGain.gain.setValueAtTime(baseVol, ctx.currentTime);
-    bgmGain.gain.exponentialRampToValueAtTime(baseVol * 0.1, ctx.currentTime + 0.1);
+    if (baseVol > 0) {
+      bgmGain.gain.exponentialRampToValueAtTime(baseVol * 0.1, ctx.currentTime + 0.1);
+    }
     
     step++;
   }, 160); // Fast tempo

@@ -57,15 +57,34 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleMessage = useCallback((msg: Message) => {
-    if (msg.type === 'STATE_UPDATE' && roleRef.current === 'guest') {
+    if (msg.type === 'STATE_UPDATE') {
       const state = gameStateRef.current;
-      // We only accept score and death from state updates to prevent physics rubberbanding
-      state.player1.score = Math.max(state.player1.score, msg.state.player1.score);
-      state.player2.score = Math.max(state.player2.score, msg.state.player2.score);
-      if (msg.state.player1.isDead) state.player1.isDead = true;
-      if (msg.state.player2.isDead) state.player2.isDead = true;
-      if (msg.state.gameOver) state.gameOver = true;
-      
+      if (roleRef.current === 'guest') {
+        // Guest receives Host's update (player1)
+        state.player1.score = Math.max(state.player1.score, msg.state.player1.score);
+        if (msg.state.player1.isDead) state.player1.isDead = true;
+        if (msg.state.gameOver) state.gameOver = true;
+        
+        state.player1.y = msg.state.player1.y;
+        state.player1.velocity = msg.state.player1.velocity;
+        
+        // Host is authority over distance and pipes occasionally to prevent drift
+        // but replacing pipes directly causes visual stutter.
+        // Sync distance if drifted too much
+        if (Math.abs(state.distance - msg.state.distance) > 50) {
+           state.distance = msg.state.distance;
+           state.pipes = msg.state.pipes; // overwrite pipes to resync
+           state.seed = msg.state.seed;
+        }
+
+      } else if (roleRef.current === 'host') {
+        // Host receives Guest's update (player2)
+        state.player2.score = Math.max(state.player2.score, msg.state.player2.score);
+        if (msg.state.player2.isDead) state.player2.isDead = true;
+        
+        state.player2.y = msg.state.player2.y;
+        state.player2.velocity = msg.state.player2.velocity;
+      }
     } else if (msg.type === 'FLAP') {
       if (roleRef.current === 'host') {
         flap(gameStateRef.current.player2);
@@ -200,7 +219,7 @@ export default function App() {
       
       state.pipes.forEach((p) => {
         drawPipe(ctx, p.x, p.openingY, PIPE_WIDTH, GAME_HEIGHT, true);
-        drawPipe(ctx, p.x, p.openingY + PIPE_GAP, PIPE_WIDTH, GAME_HEIGHT, false);
+        drawPipe(ctx, p.x, p.openingY + p.gap, PIPE_WIDTH, GAME_HEIGHT, false);
       });
 
       drawGround(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
@@ -245,10 +264,15 @@ export default function App() {
             state.pipes.forEach((p) => (p.x -= speed));
           
           const lastPipeX = state.pipes.length > 0 ? state.pipes[state.pipes.length - 1].x : 0;
-          const currentSpawnDist = Math.max(300, 600 - (state.distance * 0.05));
+          const currentSpawnDist = Math.max(350, 600 - (state.distance * 0.04));
           if (state.pipes.length === 0 || lastPipeX < GAME_WIDTH - currentSpawnDist) {
             state.seed++;
-            const baseY = 120 + seededRandom(state.seed) * (GAME_HEIGHT - GROUND_HEIGHT - 240 - PIPE_GAP);
+            const randHeight = seededRandom(state.seed);
+            state.seed++;
+            const randDist = seededRandom(state.seed);
+            const gap = 160 + Math.floor(randDist * 80); // 160 to 240 gap size
+            const baseY = 100 + randHeight * (GAME_HEIGHT - GROUND_HEIGHT - gap - 200);
+            
             state.seed++;
             const isMoving = state.distance > 2400 && seededRandom(state.seed) > 0.4;
             state.seed++;
@@ -258,6 +282,7 @@ export default function App() {
               x: GAME_WIDTH,
               openingY: baseY,
               baseY: baseY,
+              gap: gap,
               isMoving: isMoving,
               phase: phase,
               passed: false,
@@ -288,13 +313,16 @@ export default function App() {
           });
 
           state.pipes.forEach((p) => {
-            if (checkCollision(state.player1, p) && !state.player1.isDead) {
-              state.player1.isDead = true;
-              playDieSound();
-            }
-            if (checkCollision(state.player2, p) && !state.player2.isDead) {
-              state.player2.isDead = true;
-              playDieSound();
+            if (role === 'host') {
+              if (checkCollision(state.player1, p) && !state.player1.isDead) {
+                state.player1.isDead = true;
+                playDieSound();
+              }
+            } else {
+              if (checkCollision(state.player2, p) && !state.player2.isDead) {
+                state.player2.isDead = true;
+                playDieSound();
+              }
             }
           });
 
@@ -308,8 +336,8 @@ export default function App() {
 
           gameStateRef.current = { ...state };
           
-          // Host only sends sync updates every 15 frames
-          if (role === 'host' && frameRef.current % 15 === 0) {
+          // Both send sync updates every 15 frames for their own bird
+          if (frameRef.current % 15 === 0) {
             sendMessage({ type: 'STATE_UPDATE', state: gameStateRef.current });
           }
         }
@@ -393,11 +421,19 @@ export default function App() {
              
              <div className="space-y-6">
                 <div>
-                   <label className="text-sm font-bold text-[#53381a] uppercase tracking-wider mb-2 flex justify-between items-center font-mono">
-                     <span>MUSIC</span>
-                     <span className="text-[#e26900]">{Math.round(localSettings.bgmVolume * 100)}%</span>
+                   <label className="text-sm font-bold text-[#53381a] uppercase tracking-wider mb-2 flex items-center gap-2 font-mono">
+                     <input 
+                       type="checkbox" 
+                       checked={localSettings.bgmEnabled} 
+                       onChange={(e) => handleSettingsChange({ bgmEnabled: e.target.checked })}
+                       className="w-5 h-5 accent-[#e26900] border-[#53381a] rounded-sm cursor-pointer"
+                     />
+                     <span className="cursor-pointer" onClick={() => handleSettingsChange({ bgmEnabled: !localSettings.bgmEnabled })}>
+                       MUSIC
+                     </span>
+                     {localSettings.bgmEnabled ? <Volume2 size={16} className="text-[#53381a]"/> : <VolumeX size={16} className="text-[#53381a]/50" />}
                    </label>
-                   <input type="range" min="0" max="1" step="0.05" value={localSettings.bgmVolume} onChange={(e) => handleSettingsChange({ bgmVolume: parseFloat(e.target.value) })} className="w-full h-4 bg-[#b5aa58] rounded appearance-none cursor-pointer border-[2px] border-[#53381a] drop-shadow-sm accent-[#e26900]" />
+                   <input disabled={!localSettings.bgmEnabled} type="range" min="0" max="1" step="0.05" value={localSettings.bgmVolume} onChange={(e) => handleSettingsChange({ bgmVolume: parseFloat(e.target.value) })} className="w-full h-4 bg-[#b5aa58] rounded appearance-none cursor-pointer border-[2px] border-[#53381a] drop-shadow-sm accent-[#e26900] disabled:opacity-40" />
                 </div>
                 
                 <div>
