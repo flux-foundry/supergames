@@ -166,12 +166,62 @@ export const drawFrog = (
 };
 
 export const drawBackground = (ctx: CanvasRenderingContext2D, width: number, height: number, offsetX: number = 0) => {
+  // Cycle length: ~25000 distance
+  // 0-10000: Day (70c5ce)
+  // 10000-15000: Evening (fc9c54)
+  // 15000-25000: Night (0f172a)
+  const cycle = offsetX % 25000;
+  let skyColor = { r: 112, g: 197, b: 206 }; // #70c5ce
+  
+  const lerpColor = (c1: {r:number, g:number, b:number}, c2: {r:number, g:number, b:number}, t: number) => {
+    return {
+      r: Math.round(c1.r + (c2.r - c1.r) * t),
+      g: Math.round(c1.g + (c2.g - c1.g) * t),
+      b: Math.round(c1.b + (c2.b - c1.b) * t)
+    };
+  };
+
+  const dayC = { r: 112, g: 197, b: 206 };
+  const eveC = { r: 252, g: 156, b: 84 };
+  const nightC = { r: 15, g: 23, b: 42 };
+
+  if (cycle < 8000) {
+    skyColor = dayC;
+  } else if (cycle < 10000) { // Transition Day -> Evening
+    skyColor = lerpColor(dayC, eveC, (cycle - 8000) / 2000);
+  } else if (cycle < 13000) { // Evening
+    skyColor = eveC;
+  } else if (cycle < 15000) { // Transition Evening -> Night
+    skyColor = lerpColor(eveC, nightC, (cycle - 13000) / 2000);
+  } else if (cycle < 23000) { // Night
+    skyColor = nightC;
+  } else { // Transition Night -> Day
+    skyColor = lerpColor(nightC, dayC, (cycle - 23000) / 2000);
+  }
+
   // Sky
-  ctx.fillStyle = '#70c5ce';
+  ctx.fillStyle = `rgb(${skyColor.r}, ${skyColor.g}, ${skyColor.b})`;
   ctx.fillRect(0, 0, width, height);
 
+  // Stars during night
+  if (cycle > 13000 && cycle < 25000) {
+    const starAlpha = cycle < 15000 ? (cycle - 13000) / 2000 : (cycle > 23000 ? 1 - (cycle - 23000) / 2000 : 1);
+    ctx.fillStyle = `rgba(255, 255, 255, ${starAlpha * 0.8})`;
+    for (let i = 0; i < 20; i++) {
+       const sx = ((i * 37) - (offsetX * 0.05)) % width;
+       const resolvedSx = sx < 0 ? sx + width : sx;
+       const sy = (i * 101) % (height / 2);
+       ctx.fillRect(resolvedSx, sy, 2, 2);
+    }
+  }
+
   // Parallax clouds
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  let cloudAlpha = 0.4;
+  if (cycle > 13000 && cycle <= 15000) cloudAlpha = 0.4 * (1 - (cycle - 13000) / 2000); // fade out
+  else if (cycle > 15000 && cycle < 23000) cloudAlpha = 0.05; // tiny bit of cloud
+  else if (cycle >= 23000) cloudAlpha = 0.05 + 0.35 * ((cycle - 23000) / 2000); // fade in
+
+  ctx.fillStyle = `rgba(255,255,255,${cloudAlpha})`;
   for (let i = 0; i < 15; i++) {
     const cx = ((i * 150) - (offsetX * 0.2)) % (width + 200);
     const resolvedCx = cx < -200 ? cx + width + 400 : cx;

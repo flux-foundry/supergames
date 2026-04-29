@@ -32,6 +32,9 @@ import {
   audioSettings,
   updateAudioSettings,
   playFrogSound,
+  playAmbientSound,
+  updateAmbientSound,
+  stopAmbientSound,
 } from './lib/audio';
 
 export default function App() {
@@ -119,6 +122,7 @@ export default function App() {
       setQuitRequested(false);
       setOpponentWantsQuit(false);
       playBgm();
+      playAmbientSound();
     } else if (msg.type === 'REMATCH_REQUEST') {
       if (gameStateRef.current.gameOver) {
         setOpponentWantsRematch(true);
@@ -198,6 +202,7 @@ export default function App() {
     setOpponentWantsQuit(false);
     sendMessage({ type: 'START_GAME', state: newState });
     playBgm();
+    playAmbientSound();
   }, [sendMessage]);
 
   const togglePause = useCallback(() => {
@@ -270,19 +275,9 @@ export default function App() {
       ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
       drawBackground(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
       
-      state.pipes.forEach((p) => {
-        drawPipe(ctx, p.x, p.openingY, PIPE_WIDTH, GAME_HEIGHT, true);
-        drawPipe(ctx, p.x, p.openingY + p.gap, PIPE_WIDTH, GAME_HEIGHT, false);
-        if (p.hasFrog && p.frogX !== undefined && p.frogY !== undefined) {
-           drawFrog(ctx, p.x + p.frogX, p.frogY, p.frogVy || 0, p.frogState === 'telegraph', p.frogColor);
-        }
-      });
-
-      drawGround(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
-
       const f = Math.floor(frameRef.current / 5) % 3;
       
-      // Draw the player's own bird on top
+      // Draw the player's own bird behind pipes
       if (isSinglePlayer) {
         drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, state.player1.color || '#f8d020', state.player1.isDead);
       } else if (roleRef.current === 'host') {
@@ -292,6 +287,16 @@ export default function App() {
         drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, state.player1.color || '#f8d020', state.player1.isDead);
         drawBird(ctx, state.player2.x, state.player2.y, state.player2.rotation, f, state.player2.color || '#20d0f8', state.player2.isDead);
       }
+      
+      state.pipes.forEach((p) => {
+        if (p.hasFrog && p.frogX !== undefined && p.frogY !== undefined) {
+           drawFrog(ctx, p.x + p.frogX, p.frogY, p.frogVy || 0, p.frogState === 'telegraph', p.frogColor);
+        }
+        drawPipe(ctx, p.x, p.openingY, PIPE_WIDTH, GAME_HEIGHT, true);
+        drawPipe(ctx, p.x, p.openingY + p.gap, PIPE_WIDTH, GAME_HEIGHT, false);
+      });
+
+      drawGround(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
       
       ctx.restore();
     };
@@ -313,6 +318,7 @@ export default function App() {
 
         if (frameRef.current % 15 === 0) {
           setGameState({...gameStateRef.current});
+          updateAmbientSound(gameStateRef.current.distance);
         }
 
         if (gameStateRef.current.gameStarted && !gameStateRef.current.gameOver) {
@@ -360,11 +366,11 @@ export default function App() {
             state.seed++;
             const phase = seededRandom(state.seed) * Math.PI * 2;
             state.seed++;
-            const hasFrog = state.distance > 1500 && seededRandom(state.seed) > 0.6;
+            const hasFrog = state.distance > 1000 && seededRandom(state.seed) > 0.4;
             state.seed++;
-            const frogBehavior = seededRandom(state.seed) > 0.4 ? 'jumper' : 'scare';
+            const frogBehavior = seededRandom(state.seed) > 0.25 ? 'jumper' : 'scare';
             state.seed++;
-            const frogJumpVy = seededRandom(state.seed) > 0.5 ? -11 : -7.5; // High jump vs low jump
+            const frogJumpVy = -8 - seededRandom(state.seed) * 5; // -8 to -13
             state.seed++;
             const FROG_COLORS = ['#10b981', '#ef4444', '#8b5cf6', '#f59e0b', '#06b6d4', '#e879f9'];
             const frogColor = FROG_COLORS[Math.floor(seededRandom(state.seed) * FROG_COLORS.length)];
@@ -409,9 +415,12 @@ export default function App() {
                  p.frogVx = 0;
                  p.frogVy = 0;
                  // Deterministically trigger jump when frog is at a certain distance
-                 if (p.frogBehavior === 'jumper' && frogGlobalX < 320 && frogGlobalX > 310) {
-                    p.frogState = 'telegraph';
-                    p.frogTimer = 30; // 30 frames warning (90 pixels distance)
+                 if (p.frogBehavior === 'jumper' && frogGlobalX < 320 && frogGlobalX > 180) {
+                    // Slight variation based on the fractional part of distance
+                    if (frogGlobalX < 240 || (p.x * 100) % 100 > 95) {
+                      p.frogState = 'telegraph';
+                      p.frogTimer = 30; // 30 frames warning (90 pixels distance)
+                    }
                  }
                } else if (p.frogState === 'telegraph') {
                  p.frogY = groundLevel + 4; // crouch lower indicating jump build-up
@@ -461,7 +470,6 @@ export default function App() {
             if (isSinglePlayer || role === 'host') {
               if (!state.player1.isDead && checkCollision(state.player1, p)) {
                 state.player1.isDead = true;
-                state.player1.x = Math.min(state.player1.x, p.x - 16); // push visually out of pipe
                 playDieSound();
                 shakeRef.current = 15;
               }
@@ -469,7 +477,6 @@ export default function App() {
             if (!isSinglePlayer && role !== 'host') {
               if (!state.player2.isDead && checkCollision(state.player2, p)) {
                 state.player2.isDead = true;
-                state.player2.x = Math.min(state.player2.x, p.x - 16); // push visually out of pipe
                 playDieSound();
                 shakeRef.current = 15;
               }
@@ -480,12 +487,14 @@ export default function App() {
             if (state.player1.isDead && state.player1.y >= GAME_HEIGHT - GROUND_HEIGHT - 16) {
                state.gameOver = true;
                stopBgm();
+               stopAmbientSound();
             }
           } else {
             if (state.player1.isDead && state.player2.isDead) {
               if (state.player1.y >= GAME_HEIGHT - GROUND_HEIGHT - 16 && state.player2.y >= GAME_HEIGHT - GROUND_HEIGHT - 16) {
                  state.gameOver = true;
                  stopBgm();
+                 stopAmbientSound();
               }
             }
           }
@@ -510,14 +519,17 @@ export default function App() {
 
   // Disconnect & stop BGM on unmount
   useEffect(() => {
-    return () => stopBgm();
+    return () => {
+      stopBgm();
+      stopAmbientSound();
+    };
   }, []);
 
   // Confetti effect on victory
   useEffect(() => {
     if (gameState.gameOver && connected) {
-      const myScore = role === 'host' ? gameState.player1.score : gameState.player2.score;
-      const oppScore = role === 'host' ? gameState.player2.score : gameState.player1.score;
+      const myScore = (isSinglePlayer || role === 'host') ? gameState.player1.score : gameState.player2.score;
+      const oppScore = (isSinglePlayer || role === 'host') ? gameState.player2.score : gameState.player1.score;
       
       if (myScore > oppScore) {
         const duration = 2500;
@@ -741,8 +753,7 @@ export default function App() {
                               const text = await navigator.clipboard.readText();
                               if (text) setPartnerId(text.trim());
                             } catch (err) {
-                              console.error('Failed to read clipboard', err);
-                              alert('Could not read clipboard. Please paste manually (Ctrl+V or Cmd+V).');
+                              // Ignore clipboard read errors in iframes
                             }
                           }}
                           className="shrink-0 px-3 bg-[#eab308] hover:bg-[#fcd34d] text-[#53381a] font-black border-[4px] border-[#a09a5b] rounded transition-all text-sm uppercase tracking-widest"
@@ -963,8 +974,8 @@ export default function App() {
                     <h2 className="text-3xl font-black uppercase text-white drop-shadow-[2px_2px_0_rgba(0,0,0,0.3)] font-mono tracking-tighter">
                       {(() => {
                         if (isSinglePlayer) return 'GAME OVER';
-                        const myScore = role === 'host' ? gameState.player1.score : gameState.player2.score;
-                        const oppScore = role === 'host' ? gameState.player2.score : gameState.player1.score;
+                        const myScore = (isSinglePlayer || role === 'host') ? gameState.player1.score : gameState.player2.score;
+                        const oppScore = (isSinglePlayer || role === 'host') ? gameState.player2.score : gameState.player1.score;
                         if (myScore > oppScore) return 'VICTORY';
                         if (myScore < oppScore) return 'DEFEAT';
                         return 'DRAW';
@@ -985,17 +996,23 @@ export default function App() {
 
                   <div className="text-[#654823] text-[11px] sm:text-[13px] font-bold uppercase tracking-widest mb-6 max-w-[280px] mx-auto opacity-90 px-2 min-h-[4rem] flex items-center justify-center text-balance leading-relaxed">
                     {(() => {
-                      const myScore = role === 'host' ? gameState.player1.score : gameState.player2.score;
-                      const oppScore = role === 'host' ? gameState.player2.score : gameState.player1.score;
+                      const myScore = (isSinglePlayer || role === 'host') ? gameState.player1.score : gameState.player2.score;
+                      const oppScore = (isSinglePlayer || role === 'host') ? gameState.player2.score : gameState.player1.score;
                       const diff = Math.abs(myScore - oppScore);
                       const totalScore = myScore + oppScore;
                       
                       if (isSinglePlayer) {
-                        if (myScore === 0) return "Did you even try?";
-                        if (myScore < 5) return "You can do better. Probably.";
-                        if (myScore < 10) return "Not terrible, but not great.";
-                        if (myScore < 20) return "Getting the hang of it!";
-                        if (myScore < 50) return "Impressive flapping!";
+                        const snarkyZero = ["Did you even try?", "My grandma flaps better.", "Literally zero?", "Were your eyes closed?", "Skill issue.", "Is the flap button broken?", "Wow. Just wow.", "Participation trophy for you.", "Even a rock would score 1.", "You're a disappointment to birds everywhere."];
+                        const snarkyLow = ["You can do better. Probably.", "At least you tried?", "Don't quit your day job.", "Flapping ain't easy.", "A toddler could do 5.", "Gravity is a harsh mistress.", "Try keeping it in the air longer.", "Oops.", "Was that a warmup?", "Pathetic."];
+                        const snarkyMid = ["Not terrible, but not great.", "You survived a bit. Nice.", "Average flapping detected.", "Solid mediocrity.", "I've seen worse.", "You're getting warmer.", "Keep practicing, grasshopper.", "A respectable effort.", "Almost out of the noob zone.", "It's a start."];
+                        const snarkyHigh = ["Getting the hang of it!", "Now we're talking.", "Pro moves starting to show.", "Watch out, world.", "You've got some skills.", "Not bad for a human.", "The pipes fear you.", "Impressive consistency.", "You must have a gaming chair.", "Sweat mode activated."];
+                        const snarkyIncredible = ["Impressive flapping!", "You are a machine.", "Are you hacking?", "Legendary run.", "He's beginning to believe.", "Flappy mastery achieved.", "Go touch grass, please.", "Incredible reflexes.", "You belong in the hall of fame.", "Bird of the year."];
+
+                        if (myScore === 0) return snarkyZero[gameState.seed % snarkyZero.length];
+                        if (myScore < 5) return snarkyLow[gameState.seed % snarkyLow.length];
+                        if (myScore < 10) return snarkyMid[gameState.seed % snarkyMid.length];
+                        if (myScore < 20) return snarkyHigh[gameState.seed % snarkyHigh.length];
+                        if (myScore < 50) return snarkyIncredible[gameState.seed % snarkyIncredible.length];
                         return "You are a Flappy God.";
                       }
                       
