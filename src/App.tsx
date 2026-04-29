@@ -21,6 +21,7 @@ import {
   drawGround,
   drawPipe,
   drawBird,
+  drawFrog,
 } from './lib/graphics';
 import {
   playFlapSound,
@@ -30,6 +31,7 @@ import {
   stopBgm,
   audioSettings,
   updateAudioSettings,
+  playFrogSound,
 } from './lib/audio';
 
 export default function App() {
@@ -55,12 +57,20 @@ export default function App() {
   const gameStateRef = useRef<GameState>(createInitialState());
   const frameRef = useRef(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  const [menuScreen, setMenuScreen] = useState<'main' | 'multiplayer' | 'settings'>('main');
+  const [isSinglePlayer, setIsSinglePlayer] = useState(false);
+  const [selectedSkin, setSelectedSkin] = useState('#f8d020');
 
   const handleMessage = useCallback((msg: Message) => {
     if (msg.type === 'STATE_UPDATE') {
       const state = gameStateRef.current;
       if (roleRef.current === 'guest') {
         // Guest receives Host's update (player1)
+        if (msg.state.gameStarted && !state.gameStarted) {
+           state.gameStarted = true;
+           state.countdown = msg.state.countdown;
+        }
         state.player1.score = Math.max(state.player1.score, msg.state.player1.score);
         if (msg.state.player1.isDead) state.player1.isDead = true;
         if (msg.state.gameOver) state.gameOver = true;
@@ -93,7 +103,11 @@ export default function App() {
       }
       playFlapSound();
     } else if (msg.type === 'TOGGLE_PAUSE') {
-      gameStateRef.current.paused = !gameStateRef.current.paused;
+      const isNowPaused = !gameStateRef.current.paused;
+      gameStateRef.current.paused = isNowPaused;
+      if (!isNowPaused) {
+        gameStateRef.current.countdown = 3;
+      }
     } else if (msg.type === 'START_GAME') {
       const newState = msg.state ?? createInitialState(Math.floor(Math.random() * 1000000));
       newState.gameStarted = true;
@@ -113,8 +127,12 @@ export default function App() {
           startGame();
         }
       }
+    } else if (msg.type === 'CANCEL_REMATCH') {
+      setOpponentWantsRematch(false);
     } else if (msg.type === 'QUIT_REQUEST') {
       setOpponentWantsQuit(true);
+    } else if (msg.type === 'CANCEL_QUIT') {
+      setOpponentWantsQuit(false);
     } else if (msg.type === 'QUIT_GAME') {
       window.location.reload();
     }
@@ -131,6 +149,7 @@ export default function App() {
   } = useMultiplayer(handleMessage);
 
   const roleRef = useRef(role);
+  const shakeRef = useRef(0);
   useEffect(() => {
     roleRef.current = role;
   }, [role]);
@@ -138,6 +157,15 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [localSettings, setLocalSettings] = useState({ ...audioSettings });
+  const [canRematch, setCanRematch] = useState(false);
+
+  useEffect(() => {
+    if (gameState.gameOver && connected) {
+      setCanRematch(false);
+      const timer = setTimeout(() => setCanRematch(true), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState.gameOver, connected]);
 
   const handleSettingsChange = (newSettings: Partial<typeof audioSettings>) => {
     const updated = { ...localSettings, ...newSettings };
@@ -154,24 +182,37 @@ export default function App() {
   };
 
   const startGame = useCallback(() => {
+    const p1Color = gameStateRef.current.player1.color;
+    const p2Color = gameStateRef.current.player2.color;
+    
     const newState = createInitialState();
+    newState.player1.color = p1Color;
+    newState.player2.color = p2Color;
     newState.gameStarted = true;
     newState.countdown = 3;
     gameStateRef.current = newState;
     setGameState(newState);
+    setRematchRequested(false);
+    setOpponentWantsRematch(false);
+    setQuitRequested(false);
+    setOpponentWantsQuit(false);
     sendMessage({ type: 'START_GAME', state: newState });
     playBgm();
   }, [sendMessage]);
 
   const togglePause = useCallback(() => {
-    gameStateRef.current.paused = !gameStateRef.current.paused;
+    const isNowPaused = !gameStateRef.current.paused;
+    gameStateRef.current.paused = isNowPaused;
+    if (!isNowPaused) {
+      gameStateRef.current.countdown = 3;
+    }
     sendMessage({ type: 'TOGGLE_PAUSE' });
   }, [sendMessage]);
 
   const handleInput = useCallback(() => {
     const state = gameStateRef.current;
     if (!state.gameStarted) {
-      if (role === 'host' && connected && !showSettings) startGame();
+      if ((isSinglePlayer || (role === 'host' && connected)) && !showSettings) startGame();
       return;
     }
     if (state.gameOver) {
@@ -181,7 +222,10 @@ export default function App() {
        return;
     }
 
-    if (role === 'host') {
+    if (isSinglePlayer) {
+      flap(state.player1);
+      playFlapSound();
+    } else if (role === 'host') {
       sendMessage({ type: 'FLAP' });
       flap(state.player1);
       playFlapSound();
@@ -191,7 +235,7 @@ export default function App() {
       flap(state.player2);
       playFlapSound();
     }
-  }, [connected, role, sendMessage, startGame, showSettings]);
+  }, [connected, role, sendMessage, startGame, showSettings, isSinglePlayer]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -214,20 +258,42 @@ export default function App() {
       if (!ctx) return;
       ctx.imageSmoothingEnabled = false;
 
+      ctx.save();
+      if (shakeRef.current > 0) {
+        const dx = (Math.random() - 0.5) * shakeRef.current;
+        const dy = (Math.random() - 0.5) * shakeRef.current;
+        ctx.translate(dx, dy);
+        shakeRef.current *= 0.9;
+        if (shakeRef.current < 0.5) shakeRef.current = 0;
+      }
+
       ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
       drawBackground(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
       
       state.pipes.forEach((p) => {
         drawPipe(ctx, p.x, p.openingY, PIPE_WIDTH, GAME_HEIGHT, true);
         drawPipe(ctx, p.x, p.openingY + p.gap, PIPE_WIDTH, GAME_HEIGHT, false);
+        if (p.hasFrog && p.frogX !== undefined && p.frogY !== undefined) {
+           drawFrog(ctx, p.x + p.frogX, p.frogY, p.frogVy || 0, p.frogState === 'telegraph', p.frogColor);
+        }
       });
 
       drawGround(ctx, GAME_WIDTH, GAME_HEIGHT, state.distance);
 
       const f = Math.floor(frameRef.current / 5) % 3;
-      // Draw guest (blue) behind host (yellow)
-      drawBird(ctx, state.player2.x, state.player2.y, state.player2.rotation, f, '#20d0f8');
-      drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, '#f8d020');
+      
+      // Draw the player's own bird on top
+      if (isSinglePlayer) {
+        drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, state.player1.color || '#f8d020', state.player1.isDead);
+      } else if (roleRef.current === 'host') {
+        drawBird(ctx, state.player2.x, state.player2.y, state.player2.rotation, f, state.player2.color || '#20d0f8', state.player2.isDead);
+        drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, state.player1.color || '#f8d020', state.player1.isDead);
+      } else {
+        drawBird(ctx, state.player1.x, state.player1.y, state.player1.rotation, f, state.player1.color || '#f8d020', state.player1.isDead);
+        drawBird(ctx, state.player2.x, state.player2.y, state.player2.rotation, f, state.player2.color || '#20d0f8', state.player2.isDead);
+      }
+      
+      ctx.restore();
     };
 
     let lastTime = performance.now();
@@ -256,9 +322,25 @@ export default function App() {
             state.countdown -= 1/60; // Assuming ~60fps fixed step
             if (state.countdown < 0) state.countdown = 0;
           } else if (!state.paused) {
-            const speed = (state.player1.isDead && state.player2.isDead) ? 0 : 3;
+            const player1WasDead = state.player1.isDead;
+            const player2WasDead = state.player2.isDead;
+
+            const speed = isSinglePlayer 
+              ? (state.player1.isDead ? 0 : 3) 
+              : ((state.player1.isDead && state.player2.isDead) ? 0 : 3);
             updateBird(state.player1, speed);
-            updateBird(state.player2, speed);
+            if (!isSinglePlayer) {
+              updateBird(state.player2, speed);
+            }
+
+            if (!player1WasDead && state.player1.isDead && (isSinglePlayer || role === 'host')) {
+               playDieSound();
+               shakeRef.current = 15;
+            }
+            if (!isSinglePlayer && !player2WasDead && state.player2.isDead && role === 'guest') {
+               playDieSound();
+               shakeRef.current = 15;
+            }
 
             state.distance += speed;
             state.pipes.forEach((p) => (p.x -= speed));
@@ -270,13 +352,26 @@ export default function App() {
             const randHeight = seededRandom(state.seed);
             state.seed++;
             const randDist = seededRandom(state.seed);
-            const gap = 160 + Math.floor(randDist * 80); // 160 to 240 gap size
-            const baseY = 100 + randHeight * (GAME_HEIGHT - GROUND_HEIGHT - gap - 200);
+            const gap = 120 + Math.floor(randDist * 160); // 120 to 280 gap size
+            const baseY = 80 + randHeight * (GAME_HEIGHT - GROUND_HEIGHT - gap - 160);
             
             state.seed++;
             const isMoving = state.distance > 2400 && seededRandom(state.seed) > 0.4;
             state.seed++;
             const phase = seededRandom(state.seed) * Math.PI * 2;
+            state.seed++;
+            const hasFrog = state.distance > 1500 && seededRandom(state.seed) > 0.6;
+            state.seed++;
+            const frogBehavior = seededRandom(state.seed) > 0.4 ? 'jumper' : 'scare';
+            state.seed++;
+            const frogJumpVy = seededRandom(state.seed) > 0.5 ? -11 : -7.5; // High jump vs low jump
+            state.seed++;
+            const FROG_COLORS = ['#10b981', '#ef4444', '#8b5cf6', '#f59e0b', '#06b6d4', '#e879f9'];
+            const frogColor = FROG_COLORS[Math.floor(seededRandom(state.seed) * FROG_COLORS.length)];
+            state.seed++;
+            const frogLocalX = 80 + seededRandom(state.seed) * 150;
+            state.seed++;
+
             state.pipes.push({
               id: state.seed.toString(),
               x: GAME_WIDTH,
@@ -286,17 +381,67 @@ export default function App() {
               isMoving: isMoving,
               phase: phase,
               passed: false,
+              hasFrog: hasFrog,
+              frogX: frogLocalX, // properly random placement
+              frogY: GAME_HEIGHT - GROUND_HEIGHT - 22, // feet touching grass
+              frogVx: 0,
+              frogVy: 0,
+              frogState: 'idle',
+              frogTimer: 0,
+              frogBehavior: frogBehavior,
+              frogSoundPlayed: false,
+              frogJumpVy: frogJumpVy,
+              frogColor: frogColor,
             });
           }
           
-          // Update moving pipes
+          // Update moving pipes and frogs
           state.pipes.forEach((p) => {
             if (p.isMoving) {
               p.openingY = p.baseY + Math.sin(state.distance * 0.015 + p.phase) * 60;
             }
+            if (p.hasFrog && p.frogX !== undefined && p.frogY !== undefined && p.frogVy !== undefined && p.frogVx !== undefined) {
+               const groundLevel = GAME_HEIGHT - GROUND_HEIGHT - 22; // ground level
+               const frogGlobalX = p.x + p.frogX;
+               
+               if (p.frogState === 'idle' || !p.frogState) {
+                 p.frogY = groundLevel;
+                 p.frogVx = 0;
+                 p.frogVy = 0;
+                 // Deterministically trigger jump when frog is at a certain distance
+                 if (p.frogBehavior === 'jumper' && frogGlobalX < 320 && frogGlobalX > 310) {
+                    p.frogState = 'telegraph';
+                    p.frogTimer = 30; // 30 frames warning (90 pixels distance)
+                 }
+               } else if (p.frogState === 'telegraph') {
+                 p.frogY = groundLevel + 4; // crouch lower indicating jump build-up
+                 if (p.frogTimer !== undefined) p.frogTimer--;
+                 if (p.frogTimer !== undefined && p.frogTimer <= 0) {
+                   p.frogState = 'jump';
+                   p.frogVy = p.frogJumpVy || -8.5; // dynamic jump height
+                   p.frogVx = 0; 
+                   
+                   if (!p.frogSoundPlayed) {
+                     playFrogSound();
+                     p.frogSoundPlayed = true;
+                   }
+                 }
+               } else if (p.frogState === 'jump') {
+                 p.frogX += p.frogVx;
+                 p.frogY += p.frogVy;
+                 p.frogVy += 0.4;
+                 if (p.frogY >= groundLevel) {
+                   p.frogY = groundLevel;
+                   p.frogVy = 0;
+                   p.frogVx = 0;
+                   p.frogState = 'idle'; // jumps once then idles
+                   p.frogBehavior = 'scare'; // convert to scare so it doesn't jump again
+                 }
+               }
+            }
           });
 
-          state.pipes = state.pipes.filter((p) => p.x > -PIPE_WIDTH);
+          state.pipes = state.pipes.filter((p) => p.x > -PIPE_WIDTH - 250);
 
           state.pipes.forEach((p) => {
             if (!p.passed && p.x + PIPE_WIDTH < 150) {
@@ -305,7 +450,7 @@ export default function App() {
                 state.player1.score++;
                 playScoreSound();
               }
-              if (!state.player2.isDead) {
+              if (!isSinglePlayer && !state.player2.isDead) {
                 state.player2.score++;
                 if (role === 'host') playScoreSound(); 
               }
@@ -313,23 +458,35 @@ export default function App() {
           });
 
           state.pipes.forEach((p) => {
-            if (role === 'host') {
-              if (checkCollision(state.player1, p) && !state.player1.isDead) {
+            if (isSinglePlayer || role === 'host') {
+              if (!state.player1.isDead && checkCollision(state.player1, p)) {
                 state.player1.isDead = true;
+                state.player1.x = Math.min(state.player1.x, p.x - 16); // push visually out of pipe
                 playDieSound();
+                shakeRef.current = 15;
               }
-            } else {
-              if (checkCollision(state.player2, p) && !state.player2.isDead) {
+            } 
+            if (!isSinglePlayer && role !== 'host') {
+              if (!state.player2.isDead && checkCollision(state.player2, p)) {
                 state.player2.isDead = true;
+                state.player2.x = Math.min(state.player2.x, p.x - 16); // push visually out of pipe
                 playDieSound();
+                shakeRef.current = 15;
               }
             }
           });
 
-          if (state.player1.isDead && state.player2.isDead) {
-            if (state.player1.y >= GAME_HEIGHT - GROUND_HEIGHT - 16 && state.player2.y >= GAME_HEIGHT - GROUND_HEIGHT - 16) {
+          if (isSinglePlayer) {
+            if (state.player1.isDead && state.player1.y >= GAME_HEIGHT - GROUND_HEIGHT - 16) {
                state.gameOver = true;
                stopBgm();
+            }
+          } else {
+            if (state.player1.isDead && state.player2.isDead) {
+              if (state.player1.y >= GAME_HEIGHT - GROUND_HEIGHT - 16 && state.player2.y >= GAME_HEIGHT - GROUND_HEIGHT - 16) {
+                 state.gameOver = true;
+                 stopBgm();
+              }
             }
           }
           }
@@ -349,7 +506,7 @@ export default function App() {
 
     animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [role, sendMessage]);
+  }, [role, sendMessage, isSinglePlayer]);
 
   // Disconnect & stop BGM on unmount
   useEffect(() => {
@@ -399,7 +556,7 @@ export default function App() {
       )}
       
       {/* Settings Button - Redesigned */}
-      {!connected && (
+      {!connected && !isSinglePlayer && (
         <button 
           onClick={(e) => { e.stopPropagation(); setShowSettings(true); }}
           className="absolute top-6 right-6 z-20 w-12 h-12 flex items-center justify-center bg-[#ded895] border-[4px] border-[#53381a] shadow-[4px_4px_0_0_#53381a] hover:translate-y-[2px] hover:shadow-[2px_2px_0_0_#53381a] transition-all cursor-pointer rounded pointer-events-auto"
@@ -460,7 +617,7 @@ export default function App() {
         </div>
       )}
       
-      {!connected ? (
+      {(!connected && !isSinglePlayer) ? (
         <div className="z-10 bg-[#70c5ce] p-6 max-w-md w-full relative flex flex-col items-center">
           
           <div className="mb-12 text-center relative mt-6">
@@ -470,80 +627,146 @@ export default function App() {
           </div>
           
           <div className="w-full bg-[#ded895] border-[6px] border-[#53381a] rounded shadow-[0_8px_0_0_#53381a] p-6">
-            <div className="mb-8 relative flex flex-col items-center">
-              <p className="text-sm text-[#53381a] mb-2 uppercase font-bold tracking-[0.2em] font-mono">Your Key</p>
-              
-              <div className="w-full bg-[#cfc778] py-4 px-4 rounded border-[4px] border-[#a09a5b] font-mono text-xl sm:text-2xl tracking-[0.3em] text-[#53381a] text-center shadow-inner relative flex justify-center items-center mb-6 h-16">
-                {!peerId ? (
-                  <span className="text-[#a09a5b] text-sm tracking-widest animate-pulse">
-                    GENERATING...
-                  </span>
-                ) : (
-                  <div className="font-black drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">{peerId}</div>
-                )}
-              </div>
-
-              <div className="flex gap-4 w-full">
-                <button 
-                  onClick={handleCopyId}
-                  disabled={!peerId}
-                  className="flex-1 py-3 bg-[#20d0f8] hover:bg-[#4de1fc] text-white border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] flex gap-2 items-center justify-center font-black uppercase text-sm tracking-widest rounded transition-all active:translate-y-[4px] active:shadow-none disabled:opacity-50"
-                  title="Copy Key"
-                >
-                  {copied ? <Check size={18} strokeWidth={3} /> : <Copy size={18} strokeWidth={3} />}
-                  {copied ? 'Copied' : 'Copy'}
-                </button>
-                <button 
-                  onClick={() => {
-                     playFlapSound();
-                     hostGame();
-                  }} 
-                  disabled={role === 'host'}
-                  className={`flex-[1.5] py-3 border-[4px] border-[#53381a] rounded font-black transition-all text-sm uppercase tracking-widest ${role === 'host' ? 'bg-[#cfc778] text-[#53381a] shadow-[0_4px_0_0_#53381a]' : 'bg-[#e05030] hover:bg-[#ff6844] text-white shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none'}`}
-                >
-                  {role === 'host' ? (
-                     <span className="flex items-center justify-center gap-1 text-[10px]">
-                       <span className="w-2 h-2 bg-[#53381a] rounded-full animate-ping"></span>
-                       WAITING...
-                     </span>
-                  ) : (
-                     'HOST GAME'
-                  )}
-                </button>
-              </div>
-            </div>
-
-          {role !== 'host' && (
-            <>
-              <div className="relative flex items-center mb-6 justify-center">
-                <div className="flex-1 border-t-[4px] border-[#cfc778]"></div>
-                <span className="mx-4 text-[10px] font-bold text-[#a09a5b] uppercase tracking-widest font-mono">Or Connect</span>
-                <div className="flex-1 border-t-[4px] border-[#cfc778]"></div>
-              </div>
-
-              <div className="space-y-4">
-                <input 
-                  type="text" 
-                  placeholder="ENTER KEY" 
-                  value={partnerId}
-                  onChange={(e) => setPartnerId(e.target.value.trim())}
-                  className="w-full bg-[#cfc778] border-[4px] border-[#a09a5b] text-[#53381a] px-4 py-3 rounded font-mono text-center text-lg tracking-widest placeholder:text-[#a09a5b]/60 outline-none focus:border-[#53381a] uppercase font-bold"
-                  maxLength={5}
-                />
+            {menuScreen === 'main' ? (
+              <div className="flex flex-col gap-4">
                 <button 
                   onClick={() => {
                     playFlapSound();
-                    joinGame(partnerId);
-                  }} 
-                  disabled={!partnerId}
-                  className="w-full py-4 bg-[#70c5ce] hover:bg-[#8adee6] text-white font-black border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] rounded transition-all disabled:opacity-50 text-xl uppercase tracking-widest active:translate-y-[4px] active:shadow-none font-mono"
+                    setIsSinglePlayer(true);
+                  }}
+                  className="w-full py-4 bg-[#70c5ce] hover:bg-[#8adee6] text-white font-black border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] rounded transition-all text-xl uppercase tracking-widest active:translate-y-[4px] active:shadow-none font-mono"
                 >
-                  JOIN GAME
+                  SINGLE PLAYER
+                </button>
+                <button 
+                  onClick={() => {
+                    playFlapSound();
+                    setMenuScreen('multiplayer');
+                  }}
+                  className="w-full py-4 bg-[#e05030] hover:bg-[#ff6844] text-white font-black border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] rounded transition-all text-xl uppercase tracking-widest active:translate-y-[4px] active:shadow-none font-mono"
+                >
+                  MULTIPLAYER
+                </button>
+                <button 
+                  onClick={() => {
+                    playFlapSound();
+                    window.close(); // might not work in iframes, so fallback below
+                    // Fallback to reloading if not closed
+                    setTimeout(() => window.location.reload(), 100);
+                  }}
+                  className="w-full py-3 bg-[#a09a5b] hover:bg-[#cfc778] text-[#53381a] font-black border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] rounded transition-all text-sm uppercase tracking-widest active:translate-y-[4px] active:shadow-none font-mono mt-2"
+                >
+                  EXIT
                 </button>
               </div>
-            </>
-          )}
-          {error && <p className="text-red-600 mt-4 text-xs font-bold uppercase tracking-widest bg-red-200 py-3 rounded border-[4px] border-red-300 font-mono text-center">{error}</p>}
+            ) : (
+              // Multiplayer screen
+              <div className="flex flex-col relative w-full">
+                <button 
+                  onClick={() => {
+                     setMenuScreen('main');
+                     if (role === 'host') {
+                       window.location.reload(); 
+                     }
+                  }} 
+                  className="self-start text-[#53381a] hover:text-[#e05030] font-black uppercase text-xs tracking-widest flex items-center gap-1 mb-2 bg-transparent"
+                >
+                  ◀ BACK
+                </button>
+
+                <div className="mb-8 mt-2 relative flex flex-col items-center">
+                  <p className="text-sm text-[#53381a] mb-2 uppercase font-bold tracking-[0.2em] font-mono">Your Key</p>
+                  
+                  <div className="w-full bg-[#cfc778] py-4 px-4 rounded border-[4px] border-[#a09a5b] font-mono text-xl sm:text-2xl tracking-[0.3em] text-[#53381a] text-center shadow-inner relative flex justify-center items-center mb-6 h-16">
+                    {!peerId ? (
+                      <span className="text-[#a09a5b] text-sm tracking-widest animate-pulse">
+                        GENERATING...
+                      </span>
+                    ) : (
+                      <div className="font-black drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">{peerId}</div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-4 w-full">
+                    <button 
+                      onClick={handleCopyId}
+                      disabled={!peerId}
+                      className="flex-1 py-3 bg-[#20d0f8] hover:bg-[#4de1fc] text-white border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] flex gap-2 items-center justify-center font-black uppercase text-sm tracking-widest rounded transition-all active:translate-y-[4px] active:shadow-none disabled:opacity-50"
+                      title="Copy Key"
+                    >
+                      {copied ? <Check size={18} strokeWidth={3} /> : <Copy size={18} strokeWidth={3} />}
+                      {copied ? 'Copied' : 'Copy'}
+                    </button>
+                    <button 
+                      onClick={() => {
+                        playFlapSound();
+                        hostGame();
+                      }} 
+                      disabled={role === 'host'}
+                      className={`flex-[1.5] py-3 border-[4px] border-[#53381a] rounded font-black transition-all text-sm uppercase tracking-widest ${role === 'host' ? 'bg-[#cfc778] text-[#53381a] shadow-[0_4px_0_0_#53381a]' : 'bg-[#e05030] hover:bg-[#ff6844] text-white shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none'}`}
+                    >
+                      {role === 'host' ? (
+                        <span className="flex items-center justify-center gap-1 text-[10px]">
+                          <span className="w-2 h-2 bg-[#53381a] rounded-full animate-ping"></span>
+                          WAITING...
+                        </span>
+                      ) : (
+                        'HOST GAME'
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {role !== 'host' && (
+                  <>
+                    <div className="relative flex items-center mb-6 justify-center">
+                      <div className="flex-1 border-t-[4px] border-[#cfc778]"></div>
+                      <span className="mx-4 text-[10px] font-bold text-[#a09a5b] uppercase tracking-widest font-mono">Or Connect</span>
+                      <div className="flex-1 border-t-[4px] border-[#cfc778]"></div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          placeholder="ENTER KEY" 
+                          value={partnerId}
+                          onChange={(e) => setPartnerId(e.target.value.trim())}
+                          className="w-full bg-[#cfc778] border-[4px] border-[#a09a5b] text-[#53381a] px-4 py-3 rounded font-mono text-center text-lg tracking-widest placeholder:text-[#a09a5b]/60 outline-none focus:border-[#53381a] uppercase font-bold"
+                          maxLength={5}
+                        />
+                        <button
+                          onClick={async () => {
+                            try {
+                              const text = await navigator.clipboard.readText();
+                              if (text) setPartnerId(text.trim());
+                            } catch (err) {
+                              console.error('Failed to read clipboard', err);
+                              alert('Could not read clipboard. Please paste manually (Ctrl+V or Cmd+V).');
+                            }
+                          }}
+                          className="shrink-0 px-3 bg-[#eab308] hover:bg-[#fcd34d] text-[#53381a] font-black border-[4px] border-[#a09a5b] rounded transition-all text-sm uppercase tracking-widest"
+                          title="Paste Key"
+                        >
+                          PASTE
+                        </button>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          playFlapSound();
+                          joinGame(partnerId);
+                        }} 
+                        disabled={!partnerId}
+                        className="w-full py-4 bg-[#70c5ce] hover:bg-[#8adee6] text-white font-black border-[4px] border-[#53381a] shadow-[0_4px_0_0_#53381a] rounded transition-all disabled:opacity-50 text-xl uppercase tracking-widest active:translate-y-[4px] active:shadow-none font-mono"
+                      >
+                        JOIN GAME
+                      </button>
+                    </div>
+                  </>
+                )}
+                {error && <p className="text-red-600 mt-4 text-xs font-bold uppercase tracking-widest bg-red-200 py-3 rounded border-[4px] border-red-300 font-mono text-center">{error}</p>}
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -558,49 +781,80 @@ export default function App() {
           />
 
           {/* Top HUD Overlay */}
+          {/* Top Center Score */}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-50 mt-0 sm:mt-2 lg:mt-0">
+             <div className="bg-slate-900/80 backdrop-blur-xl border border-white/10 px-4 sm:px-8 py-2 sm:py-3 rounded-[20px] flex gap-4 sm:gap-16 items-center shadow-2xl border-[3px] border-[#303030]">
+               <div className="flex flex-col items-center">
+                 <span className="text-[9px] sm:text-[10px] font-black text-yellow-400 uppercase tracking-widest mb-0 sm:mb-1 shadow-yellow-500/50 drop-shadow-md">{isSinglePlayer ? 'SCORE' : role === 'host' ? 'YOU' : 'PAL'}</span>
+                 <span className="text-2xl sm:text-4xl font-black font-mono text-white drop-shadow-lg leading-none">{gameState.player1.score}</span>
+               </div>
+               {!isSinglePlayer && (
+                 <>
+                   <div className="w-px h-6 sm:h-8 bg-gradient-to-b from-transparent via-white/20 to-transparent"></div>
+                   <div className="flex flex-col items-center">
+                     <span className="text-[9px] sm:text-[10px] font-black text-cyan-400 uppercase tracking-widest mb-0 sm:mb-1 shadow-cyan-500/50 drop-shadow-md">{role === 'guest' ? 'YOU' : 'PAL'}</span>
+                     <span className="text-2xl sm:text-4xl font-black font-mono text-white drop-shadow-lg leading-none">{gameState.player2.score}</span>
+                   </div>
+                 </>
+               )}
+             </div>
+          </div>
+
           <div className="absolute top-4 inset-x-2 sm:inset-x-4 flex justify-between items-start pointer-events-none z-40">
             {/* Left Column */}
             <div className="flex flex-col gap-2 pointer-events-auto">
-               <button onClick={(e) => { 
-                  e.stopPropagation(); 
-                  if (opponentWantsQuit) {
-                    sendMessage({ type: 'QUIT_GAME' });
-                    window.location.reload(); 
-                  } else {
-                    sendMessage({ type: 'QUIT_REQUEST' });
-                    setQuitRequested(true);
-                  }
-               }} className={`text-[10px] sm:text-xs font-bold text-slate-100 uppercase tracking-widest border-[3px] border-[#303030] border-b-[4px] px-2 sm:px-4 py-1.5 sm:py-2 rounded transition-all ${quitRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#eab308] hover:bg-[#fcd34d] text-[#303030]'}`} disabled={quitRequested}> 
-                 {quitRequested ? 'WAITING...' : opponentWantsQuit ? 'ACCEPT QUIT' : '◀ QUIT'} 
-               </button>
-               {opponentWantsQuit && !quitRequested && (
-                 <div className="bg-red-500 text-white text-[8px] px-1 py-1 rounded font-bold animate-bounce text-center mt-1">
-                   Opponent wants to quit!
-                 </div>
+               {isSinglePlayer ? (
+                 <button onClick={(e) => {
+                    e.stopPropagation();
+                    window.location.reload();
+                 }} className="text-[10px] sm:text-xs font-bold text-slate-100 uppercase tracking-widest border-[3px] border-[#303030] border-b-[4px] px-2 sm:px-4 py-1.5 sm:py-2 rounded transition-all bg-[#e05030] hover:bg-[#ff6844] text-white">
+                   ◀ QUIT
+                 </button>
+               ) : (
+                 <>
+                   <div className="flex flex-col gap-1">
+                     <button onClick={(e) => { 
+                        e.stopPropagation(); 
+                        if (quitRequested) {
+                           sendMessage({ type: 'CANCEL_QUIT' });
+                           setQuitRequested(false);
+                        } else if (opponentWantsQuit) {
+                          sendMessage({ type: 'QUIT_GAME' });
+                          window.location.reload(); 
+                        } else {
+                          sendMessage({ type: 'QUIT_REQUEST' });
+                          setQuitRequested(true);
+                        }
+                     }} className={`text-[10px] sm:text-xs font-bold text-slate-100 uppercase tracking-widest border-[3px] border-[#303030] border-b-[4px] px-2 sm:px-4 py-1.5 sm:py-2 rounded transition-all ${quitRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#eab308] hover:bg-[#fcd34d] text-[#303030]'}`}> 
+                       {quitRequested ? 'WAITING...' : opponentWantsQuit ? 'QUIT' : '◀ QUIT'} 
+                     </button>
+                     {opponentWantsQuit && !quitRequested && (
+                       <div className="bg-red-500 text-white text-[8px] px-1 py-1 rounded font-bold animate-bounce text-center">
+                         PAL wants to quit!
+                       </div>
+                     )}
+                   </div>
+                   <button onClick={(e) => {
+                      e.stopPropagation();
+                      sendMessage({ type: 'QUIT_GAME' });
+                      window.location.reload();
+                   }} className="text-[10px] sm:text-xs font-bold text-slate-100 uppercase tracking-widest border-[3px] border-[#303030] border-b-[4px] px-2 sm:px-4 py-1.5 sm:py-2 rounded transition-all bg-[#e05030] hover:bg-[#ff6844] text-white">
+                     ABANDON
+                   </button>
+                 </>
                )}
             </div>
 
-            {/* Middle Column: Scores */}
-            <div className="flex flex-col items-center pointer-events-none mt-0 sm:mt-2 lg:mt-0">
-               <div className="bg-slate-900/80 backdrop-blur-xl border border-white/10 px-4 sm:px-8 py-2 sm:py-3 rounded-[20px] flex gap-4 sm:gap-16 items-center shadow-2xl border-[3px] border-[#303030]">
-                 <div className="flex flex-col items-center">
-                   <span className="text-[9px] sm:text-[10px] font-black text-yellow-400 uppercase tracking-widest mb-0 sm:mb-1 shadow-yellow-500/50 drop-shadow-md">{role === 'host' ? 'YOU' : 'OPP'}</span>
-                   <span className="text-2xl sm:text-4xl font-black font-mono text-white drop-shadow-lg leading-none">{gameState.player1.score}</span>
-                 </div>
-                 <div className="w-px h-6 sm:h-8 bg-gradient-to-b from-transparent via-white/20 to-transparent"></div>
-                 <div className="flex flex-col items-center">
-                   <span className="text-[9px] sm:text-[10px] font-black text-cyan-400 uppercase tracking-widest mb-0 sm:mb-1 shadow-cyan-500/50 drop-shadow-md">{role === 'guest' ? 'YOU' : 'OPP'}</span>
-                   <span className="text-2xl sm:text-4xl font-black font-mono text-white drop-shadow-lg leading-none">{gameState.player2.score}</span>
-                 </div>
-               </div>
-            </div>
+            <div className="flex-1" />
 
             {/* Right Column */}
             <div className="flex flex-col items-end gap-2 pointer-events-auto">
-              <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-white/30 text-[#303030]">
-                <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e] animate-pulse border border-[#303030]"></div>
-                <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">{role === 'host' ? 'HOST' : 'CONN'}</span>
-              </div>
+              {!isSinglePlayer && (
+                <div className="flex items-center gap-2 bg-white/20 backdrop-blur-sm px-2 sm:px-3 py-1 sm:py-1.5 rounded-full border border-white/30 text-[#303030]">
+                  <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_10px_#22c55e] animate-pulse border border-[#303030]"></div>
+                  <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">{role === 'host' ? 'HOST' : 'GUEST'}</span>
+                </div>
+              )}
               {gameState.gameStarted && !gameState.gameOver && (
                   <button onClick={(e) => { e.stopPropagation(); togglePause(); }} className="text-[10px] sm:text-xs font-bold text-slate-100 hover:text-white uppercase tracking-widest border-[3px] border-[#303030] border-b-[4px] bg-[#fb923c] hover:bg-[#fdba74] text-[#303030] px-2 sm:px-4 py-1.5 sm:py-2 rounded transition-all text-center">
                     {gameState.paused ? '▶ RESUME' : '⏸ PAUSE'}
@@ -611,14 +865,34 @@ export default function App() {
 
             {/* Game States */}
             {!gameState.gameStarted && (
-              <div className="absolute inset-x-0 bottom-0 top-0 flex flex-col items-center justify-center bg-black/60 pointer-events-none z-30">
+              <div className="absolute inset-x-0 bottom-0 top-0 flex flex-col items-center justify-center bg-black/60 pointer-events-auto z-30">
                 <div className="bg-[#ded895] border-[6px] border-[#303030] p-8 max-w-sm w-11/12 rounded-lg shadow-[8px_8px_0_0_rgba(0,0,0,0.5)] flex flex-col items-center text-center">
-                  <h2 className="text-4xl font-black mb-4 uppercase text-[#303030] drop-shadow-[2px_2px_0_rgba(255,255,255,0.8)] font-mono tracking-tighter">
+                  <h2 className="text-4xl font-black mb-4 uppercase text-[#303030] drop-shadow-[2px_2px_0_rgba(255,255,255,0.8)] font-mono tracking-tighter pointer-events-none">
                     READY?
                   </h2>
-                  <p className="text-[#558022] text-sm font-bold uppercase tracking-widest px-2 flex items-center justify-center animate-pulse">
-                    {role === 'host' ? 'Tap to Start' : 'Waiting for Host...'}
+                  <p className="text-[#558022] text-sm font-bold uppercase tracking-widest px-2 flex items-center justify-center animate-pulse pointer-events-none">
+                    {(isSinglePlayer || role === 'host') ? 'Tap to Start' : 'Waiting for Host...'}
                   </p>
+                  
+                  {isSinglePlayer && (
+                    <div className="mt-6 flex flex-col items-center gap-3">
+                       <span className="text-xs font-bold text-[#53381a] uppercase font-mono tracking-widest">Select Skin</span>
+                       <div className="flex gap-4">
+                         {['#f8d020', '#20d0f8', '#ef4444', '#10b981', '#e879f9'].map(c => (
+                           <button 
+                             key={c} 
+                             onPointerDown={(e) => { 
+                               e.stopPropagation(); 
+                               setSelectedSkin(c);
+                               gameStateRef.current.player1.color = c;
+                             }} 
+                             className={`w-8 h-8 sm:w-10 sm:h-10 border-[3px] border-[#303030] transition-all rounded ${selectedSkin === c ? 'shadow-[0_0_0_4px_white,0_0_0_6px_#303030] scale-110' : 'shadow-[0_2px_0_0_#303030] active:translate-y-[2px] active:shadow-none'}`} 
+                             style={{backgroundColor: c}}
+                           />
+                         ))}
+                       </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -632,9 +906,50 @@ export default function App() {
             )}
 
             {gameState.paused && !gameState.countdown && !gameState.gameOver && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-20 pointer-events-none">
-                <div className="bg-[#ded895] border-[6px] border-[#303030] p-8 rounded shadow-[8px_8px_0_0_rgba(0,0,0,0.5)]">
-                   <span className="text-4xl font-black text-[#303030] font-mono tracking-widest">PAUSED</span>
+              <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-50 pointer-events-auto">
+                <div className="bg-[#ded895] border-[6px] border-[#303030] p-8 rounded shadow-[8px_8px_0_0_rgba(0,0,0,0.5)] flex flex-col items-center gap-6 max-w-sm w-11/12">
+                   <span className="text-4xl font-black text-[#303030] font-mono tracking-widest text-center shadow-[#ded895]">PAUSED</span>
+                   
+                   <div className="w-full space-y-4 bg-white/40 p-4 rounded-xl border-[2px] border-[#303030]/20">
+                     <div>
+                       <label className="text-sm font-bold text-[#53381a] uppercase tracking-wider mb-2 flex items-center gap-2 font-mono">
+                         <input 
+                           type="checkbox" 
+                           checked={localSettings.bgmEnabled} 
+                           onChange={(e) => handleSettingsChange({ bgmEnabled: e.target.checked })}
+                           className="w-5 h-5 accent-[#e26900] border-[#53381a] rounded-sm cursor-pointer"
+                         />
+                         <span className="cursor-pointer" onClick={() => handleSettingsChange({ bgmEnabled: !localSettings.bgmEnabled })}>MUSIC</span>
+                         {localSettings.bgmEnabled ? <Volume2 size={16} className="text-[#53381a]"/> : <VolumeX size={16} className="text-[#53381a]/50" />}
+                       </label>
+                       <input disabled={!localSettings.bgmEnabled} type="range" min="0" max="1" step="0.05" value={localSettings.bgmVolume} onChange={(e) => handleSettingsChange({ bgmVolume: parseFloat(e.target.value) })} className="w-full h-4 bg-[#b5aa58] rounded appearance-none cursor-pointer border-[2px] border-[#53381a] drop-shadow-sm accent-[#e26900] disabled:opacity-40" />
+                     </div>
+                     <div>
+                       <label className="text-sm font-bold text-[#53381a] uppercase tracking-wider mb-2 flex items-center gap-2 font-mono">
+                         <input 
+                           type="checkbox" 
+                           checked={localSettings.sfxEnabled} 
+                           onChange={(e) => handleSettingsChange({ sfxEnabled: e.target.checked })}
+                           className="w-5 h-5 accent-[#e26900] border-[#53381a] rounded-sm cursor-pointer"
+                         />
+                         <span className="cursor-pointer" onClick={() => handleSettingsChange({ sfxEnabled: !localSettings.sfxEnabled })}>SFX</span>
+                         {localSettings.sfxEnabled ? <Volume2 size={16} className="text-[#53381a]"/> : <VolumeX size={16} className="text-[#53381a]/50" />}
+                       </label>
+                       <input disabled={!localSettings.sfxEnabled} type="range" min="0" max="1" step="0.05" value={localSettings.sfxVolume} onChange={(e) => handleSettingsChange({ sfxVolume: parseFloat(e.target.value) })} className="w-full h-4 bg-[#b5aa58] rounded appearance-none cursor-pointer border-[2px] border-[#53381a] drop-shadow-sm accent-[#e26900] disabled:opacity-40" />
+                     </div>
+                   </div>
+
+                   <button onClick={(e) => { e.stopPropagation(); togglePause(); }} className="w-full py-3 bg-[#fb923c] hover:bg-[#fdba74] text-[#303030] border-[4px] border-[#303030] shadow-[0_4px_0_0_#303030] uppercase font-black text-xl tracking-widest rounded transition-all active:-translate-y-[-4px] active:shadow-none">
+                     RESUME
+                   </button>
+                   
+                   <button onClick={(e) => { 
+                      e.stopPropagation(); 
+                      sendMessage({ type: 'QUIT_GAME' });
+                      window.location.reload(); 
+                   }} className="mt-2 w-full py-2 bg-[#e05030] hover:bg-[#ff6844] text-white border-[3px] border-[#53381a] shadow-[0_3px_0_0_#53381a] uppercase font-bold text-sm tracking-widest rounded transition-all active:-translate-y-[-3px] active:shadow-none">
+                     ABANDON GAME
+                   </button>
                 </div>
               </div>
             )}
@@ -647,6 +962,7 @@ export default function App() {
                   <div className="absolute -top-6 bg-[#e05030] border-[4px] border-[#53381a] px-6 py-2 rounded shadow-[0_4px_0_0_#53381a] transform -rotate-2">
                     <h2 className="text-3xl font-black uppercase text-white drop-shadow-[2px_2px_0_rgba(0,0,0,0.3)] font-mono tracking-tighter">
                       {(() => {
+                        if (isSinglePlayer) return 'GAME OVER';
                         const myScore = role === 'host' ? gameState.player1.score : gameState.player2.score;
                         const oppScore = role === 'host' ? gameState.player2.score : gameState.player1.score;
                         if (myScore > oppScore) return 'VICTORY';
@@ -657,8 +973,14 @@ export default function App() {
                   </div>
                   
                   <div className="mt-8 flex gap-4 sm:gap-6 mb-4 font-mono text-xl sm:text-2xl font-black bg-[#cfc778] px-6 py-3 rounded border-[4px] border-[#a09a5b] shadow-inner">
-                     <span className="text-[#f07000] drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">YOU: {role === 'host' ? gameState.player1.score : gameState.player2.score}</span>
-                     <span className="text-[#20d0f8] drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">OPP: {role === 'host' ? gameState.player2.score : gameState.player1.score}</span>
+                    {isSinglePlayer ? (
+                      <span className="text-[#f07000] drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">SCORE: {gameState.player1.score}</span>
+                    ) : ( 
+                      <>
+                        <span className="text-[#f07000] drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">YOU: {role === 'host' ? gameState.player1.score : gameState.player2.score}</span>
+                        <span className="text-[#20d0f8] drop-shadow-[1px_1px_0_rgba(255,255,255,0.8)]">PAL: {role === 'host' ? gameState.player2.score : gameState.player1.score}</span>
+                      </>
+                    )}
                   </div>
 
                   <div className="text-[#654823] text-[11px] sm:text-[13px] font-bold uppercase tracking-widest mb-6 max-w-[280px] mx-auto opacity-90 px-2 min-h-[4rem] flex items-center justify-center text-balance leading-relaxed">
@@ -667,6 +989,15 @@ export default function App() {
                       const oppScore = role === 'host' ? gameState.player2.score : gameState.player1.score;
                       const diff = Math.abs(myScore - oppScore);
                       const totalScore = myScore + oppScore;
+                      
+                      if (isSinglePlayer) {
+                        if (myScore === 0) return "Did you even try?";
+                        if (myScore < 5) return "You can do better. Probably.";
+                        if (myScore < 10) return "Not terrible, but not great.";
+                        if (myScore < 20) return "Getting the hang of it!";
+                        if (myScore < 50) return "Impressive flapping!";
+                        return "You are a Flappy God.";
+                      }
                       
                       if (myScore > oppScore) {
                         const comments = [
@@ -682,7 +1013,7 @@ export default function App() {
                           "That was embarrassing to watch. For them.",
                           "You have ascended. They have plummeted.",
                           "Are you secretly a robot? Or are they just bad?",
-                          "Opponent uninstalled immediately after that.",
+                          "PAL uninstalled immediately after that.",
                           "You danced among the pipes. They ate dirt.",
                           "Was it lag, or do they just suck? We will never know.",
                           "Such grace, such poise, such brutal destruction of your enemy.",
@@ -716,7 +1047,7 @@ export default function App() {
                           "Your bird was allergic to flying, apparently.",
                           "I've seen potatoes play better.",
                           "The ground is not your friend. Why did you hug it?",
-                          "Opponent won. You provided comic relief.",
+                          "PAL won. You provided comic relief.",
                           "Is your spacebar broken, or just your spirit?",
                           "You flew like a brick attached to an anvil.",
                           "Maybe stick to walking.",
@@ -775,48 +1106,75 @@ export default function App() {
                   </div>
                   
                   <div className="flex w-full gap-2 mt-4 pointer-events-auto">
-                    {/* Quit Button */}
-                    <div className="flex-1 relative">
-                      <button onClick={(e) => { 
-                        e.stopPropagation(); 
-                        if (opponentWantsQuit) {
-                          sendMessage({ type: 'QUIT_GAME' });
+                    {isSinglePlayer ? (
+                      <>
+                        <button onClick={(e) => { 
+                          e.stopPropagation(); 
                           window.location.reload(); 
-                        } else {
-                          sendMessage({ type: 'QUIT_REQUEST' });
-                          setQuitRequested(true);
-                        }
-                      }} className={`transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center w-full ${quitRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#e05030] hover:bg-[#ff6844] text-white'}`} disabled={quitRequested}>
-                        {quitRequested ? 'WAITING' : opponentWantsQuit ? 'ACCEPT QUIT' : 'QUIT'}
-                      </button>
-                      {opponentWantsQuit && !quitRequested && (
-                        <div className="absolute -top-4 left-1/2 -translate-x-1/2 z-10 bg-red-500 text-white text-[10px] px-2 py-1 rounded font-bold animate-bounce whitespace-nowrap">
-                          Opponent quitting!
-                        </div>
-                      )}
-                    </div>
-                    {/* Rematch Button */}
-                    <div className="flex-[2] relative">
-                      <button onClick={(e) => { 
-                        e.stopPropagation(); 
-                        if (opponentWantsRematch && role === 'host') {
+                        }} className="flex-1 transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center bg-[#e05030] hover:bg-[#ff6844] text-white">
+                          QUIT
+                        </button>
+                        <button onClick={(e) => { 
+                          e.stopPropagation(); 
                           startGame();
-                        } else if (opponentWantsRematch && role === 'guest') {
-                          sendMessage({ type: 'REMATCH_REQUEST' });
-                          setRematchRequested(true);
-                        } else {
-                          sendMessage({ type: 'REMATCH_REQUEST' });
-                          setRematchRequested(true);
-                        }
-                      }} className={`transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center w-full ${rematchRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#70c5ce] hover:bg-[#8adee6] text-[#53381a]'}`} disabled={rematchRequested}>
-                        {rematchRequested ? 'WAITING...' : opponentWantsRematch ? 'ACCEPT REMATCH' : 'REMATCH'}
-                      </button>
-                      {opponentWantsRematch && !rematchRequested && (
-                        <div className="absolute -top-4 right-2 z-10 bg-[#e05030] border-2 border-[#53381a] text-white text-[10px] px-2 py-1 rounded font-bold animate-bounce whitespace-nowrap shadow-[2px_2px_0_0_#53381a]">
-                          Opponent requested!
+                        }} className="flex-[2] transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center bg-[#70c5ce] hover:bg-[#8adee6] text-[#53381a]">
+                          PLAY AGAIN
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {/* Quit Button */}
+                        <div className="flex-1 relative">
+                          <button onClick={(e) => { 
+                            if (!canRematch) return;
+                            e.stopPropagation(); 
+                            if (quitRequested) {
+                              sendMessage({ type: 'CANCEL_QUIT' });
+                              setQuitRequested(false);
+                            } else if (opponentWantsQuit) {
+                              sendMessage({ type: 'QUIT_GAME' });
+                              window.location.reload(); 
+                            } else {
+                              sendMessage({ type: 'QUIT_REQUEST' });
+                              setQuitRequested(true);
+                            }
+                          }} className={`transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center w-full ${quitRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#e05030] hover:bg-[#ff6844] text-white'}`} disabled={!canRematch}>
+                            {quitRequested ? 'WAITING' : opponentWantsQuit ? 'QUIT' : 'QUIT'}
+                          </button>
+                          {opponentWantsQuit && !quitRequested && (
+                            <div className="absolute -top-4 left-1/2 -translate-x-1/2 z-10 bg-red-500 text-white text-[10px] px-2 py-1 rounded font-bold animate-bounce whitespace-nowrap">
+                              PAL quitting!
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
+                        {/* Rematch Button */}
+                        <div className="flex-[2] relative">
+                          <button onClick={(e) => { 
+                            if (!canRematch) return;
+                            e.stopPropagation(); 
+                            if (rematchRequested) {
+                              sendMessage({ type: 'CANCEL_REMATCH' });
+                              setRematchRequested(false);
+                            } else if (opponentWantsRematch && role === 'host') {
+                              startGame();
+                            } else if (opponentWantsRematch && role === 'guest') {
+                              sendMessage({ type: 'REMATCH_REQUEST' });
+                              setRematchRequested(true);
+                            } else {
+                              sendMessage({ type: 'REMATCH_REQUEST' });
+                              setRematchRequested(true);
+                            }
+                          }} className={`transition-colors border-[4px] border-[#53381a] px-4 py-3 rounded font-black uppercase tracking-widest shadow-[0_4px_0_0_#53381a] active:translate-y-[4px] active:shadow-none text-center w-full ${rematchRequested ? 'bg-slate-400 text-slate-800' : 'bg-[#70c5ce] hover:bg-[#8adee6] text-[#53381a]'}`} disabled={!canRematch}>
+                            {rematchRequested ? 'WAITING...' : opponentWantsRematch ? 'REMATCH' : 'REMATCH'}
+                          </button>
+                          {opponentWantsRematch && !rematchRequested && (
+                            <div className="absolute -top-4 right-2 z-10 bg-[#e05030] border-2 border-[#53381a] text-white text-[10px] px-2 py-1 rounded font-bold animate-bounce whitespace-nowrap shadow-[2px_2px_0_0_#53381a]">
+                              PAL requested!
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

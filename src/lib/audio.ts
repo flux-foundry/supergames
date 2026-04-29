@@ -162,3 +162,26 @@ export const playDieSound = () => {
   osc.start();
   osc.stop(ctx.currentTime + 0.3);
 };
+
+export const playFrogSound = () => {
+  if (!audioSettings.sfxEnabled) return;
+  const ctx = getAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(300, ctx.currentTime);
+  osc.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.05);
+  osc.frequency.linearRampToValueAtTime(200, ctx.currentTime + 0.15);
+
+  const baseVol = 0.06 * audioSettings.sfxVolume;
+  gain.gain.setValueAtTime(0, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(baseVol, ctx.currentTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+
+  osc.start();
+  osc.stop(ctx.currentTime + 0.15);
+};

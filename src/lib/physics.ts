@@ -22,6 +22,7 @@ export interface BirdState {
   rotation: number;
   isDead: boolean;
   score: number;
+  color?: string;
 }
 
 export interface Pipe {
@@ -33,6 +34,17 @@ export interface Pipe {
   phase: number;
   passed: boolean;
   id: string;
+  hasFrog?: boolean;
+  frogX?: number;
+  frogY?: number;
+  frogVx?: number;
+  frogVy?: number;
+  frogState?: 'idle' | 'telegraph' | 'jump';
+  frogTimer?: number;
+  frogBehavior?: 'scare' | 'jumper';
+  frogSoundPlayed?: boolean;
+  frogJumpVy?: number;
+  frogColor?: string;
 }
 
 export interface GameState {
@@ -69,8 +81,9 @@ export const updateBird = (bird: BirdState, speed: number = 3) => {
     if (bird.y < GAME_HEIGHT - GROUND_HEIGHT - BIRD_SIZE/2) {
       bird.velocity += GRAVITY;
       bird.y += bird.velocity;
-      bird.rotation = Math.min(TERMINAL_ROTATION, bird.rotation + 0.1);
+      bird.rotation = Math.min(Math.PI / 2, bird.rotation + 0.15); // Fall straight down faster
     }
+    // Leave the dead bird behind (move left with the screen scrolling)
     bird.x -= speed;
     return;
   }
@@ -110,10 +123,24 @@ export const checkCollision = (bird: BirdState, pipe: Pipe): boolean => {
   const pxLeft = pipe.x;
   const pxRight = pipe.x + PIPE_WIDTH;
   
-  // Basic AABB check
+  // Basic AABB check for pipes
   if (bxRight > pxLeft && bxLeft < pxRight) {
     if (byTop < pipe.openingY || byBottom > pipe.openingY + pipe.gap) {
       return true;
+    }
+  }
+  
+  // Frog collision check
+  if (pipe.hasFrog && pipe.frogX !== undefined && pipe.frogY !== undefined) {
+    const fxLeft = pipe.x + pipe.frogX;
+    const fxRight = fxLeft + 24;
+    const fyTop = pipe.frogY;
+    const fyBottom = pipe.frogY + 16;
+    
+    if (bxRight > fxLeft && bxLeft < fxRight) {
+      if (byBottom > fyTop && byTop < fyBottom) {
+         return true;
+      }
     }
   }
 

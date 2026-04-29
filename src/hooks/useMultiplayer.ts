@@ -7,7 +7,9 @@ export type Message =
   | { type: 'FLAP' }
   | { type: 'START_GAME'; state?: GameState }
   | { type: 'REMATCH_REQUEST' }
+  | { type: 'CANCEL_REMATCH' }
   | { type: 'QUIT_REQUEST' }
+  | { type: 'CANCEL_QUIT' }
   | { type: 'QUIT_GAME' }
   | { type: 'TOGGLE_PAUSE' };
 
